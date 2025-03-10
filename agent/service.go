@@ -14,12 +14,13 @@ import (
 	"io/fs"
 	"math/big"
 	"net/http"
-	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/copilot-extensions/rag-extension/copilot"
 	"github.com/copilot-extensions/rag-extension/embedding"
+	"github.com/copilot-extensions/rag-extension/search"
 )
 
 // Service provides and endpoint for this agent to perform chat completions
@@ -77,31 +78,26 @@ func (s *Service) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) generateCompletion(ctx context.Context, integrationID, apiToken string, req *copilot.ChatRequest, w io.Writer) error {
-	// Initialize the datasets.  In a real application, these would be generated
-	// ahead of time and stored in a database
-	var err error
-	s.datasetsInit.Do(func() {
-		var files []fs.DirEntry
-		files, err = os.ReadDir("data")
-		if err != nil {
-			err = fmt.Errorf("error reading files from \"data\" directory: %w", err)
-			return
-		}
+	// // Initialize the datasets.  In a real application, these would be generated
+	// // ahead of time and stored in a database
+	// var err error
+	// s.datasetsInit.Do(func() {
+	// 	var filenames []string
+	// 	filenames, err = GetAllFilesInDir("data")
+	// 	if err != nil {
+	// 		err = fmt.Errorf("error reading files from \"data\" directory: %w", err)
+	// 		return
+	// 	}
 
-		filenames := make([]string, len(files))
-		for i, file := range files {
-			filenames[i] = filepath.Join("data", file.Name())
-		}
-
-		s.datasets, err = embedding.GenerateDatasets(integrationID, apiToken, filenames)
-		if err != nil {
-			err = fmt.Errorf("error generating datasets: %w", err)
-			return
-		}
-	})
-	if err != nil {
-		return err
-	}
+	// 	s.datasets, err = embedding.GenerateDatasets(integrationID, apiToken, filenames)
+	// 	if err != nil {
+	// 		err = fmt.Errorf("error generating datasets: %w", err)
+	// 		return
+	// 	}
+	// })
+	// if err != nil {
+	// 	return err
+	// }
 
 	var messages []copilot.ChatMessage
 
@@ -117,39 +113,53 @@ func (s *Service) generateCompletion(ctx context.Context, integrationID, apiToke
 			continue
 		}
 
-		emb, err := embedding.Create(ctx, integrationID, apiToken, msg.Content)
+		// emb, err := embedding.Create(ctx, integrationID, apiToken, msg.Content)
+		// if err != nil {
+		// 	return fmt.Errorf("error creating embedding for user message: %w", err)
+		// }
+
+		// // Load most appropriate dataset
+		// dataset, err := embedding.FindBestDataset(s.datasets, emb)
+		// if err != nil {
+		// 	return fmt.Errorf("error computing best dataset")
+		// }
+
+		// if dataset == nil {
+		// 	break
+		// }
+
+		// fmt.Printf("loading dataset: %s\n", dataset.Filename)
+
+		// file, err := os.Open(dataset.Filename)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to open documents: %w", err)
+		// }
+
+		// fileContents, err := io.ReadAll(file)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to read documents: %w", err)
+		// }
+
+		results, err := search.SearchTopKRelatedDocuments(msg.Content, 5)
 		if err != nil {
-			return fmt.Errorf("error creating embedding for user message: %w", err)
+			return fmt.Errorf("failed to search for related documents: %w", err)
 		}
-
-		// Load most appropriate dataset
-		dataset, err := embedding.FindBestDataset(s.datasets, emb)
-		if err != nil {
-			return fmt.Errorf("error computing best dataset")
+		chunks := make([]string, 0)
+		for _, result := range results {
+			chunk := fmt.Sprintf("title: %s\n", result.Title)
+			chunk += fmt.Sprintf("header_1: %s\n", result.Header1)
+			chunk += fmt.Sprintf("header_2: %s\n", result.Header2)
+			chunk += fmt.Sprintf("header_3: %s\n", result.Header3)
+			chunk += fmt.Sprintf("chunk: %s\n", result.Chunk)
+			chunks = append(chunks, chunk)
 		}
-
-		if dataset == nil {
-			break
-		}
-
-		fmt.Printf("loading dataset: %s\n", dataset.Filename)
-
-		file, err := os.Open(dataset.Filename)
-		if err != nil {
-			return fmt.Errorf("failed to open documents: %w", err)
-		}
-
-		fileContents, err := io.ReadAll(file)
-		if err != nil {
-			return fmt.Errorf("failed to read documents: %w", err)
-		}
-
+		context := strings.Join(chunks, "-----------------\n")
+		println(context)
 		messages = append(messages, copilot.ChatMessage{
 			Role: "system",
-			Content: "You are a helpful assistant that replies to user messages.  Use the following context when responding to a message.\n" +
-				"Context: " + string(fileContents),
+			Content: "You are a TypeSpec assistant. You are familiar with TypeSpec syntax. You can easily create an TypeSpec Project by User's requirements. \nNotice: - You need to list the title of reference content at the last\n - The answer should be simple and clear\n" +
+				"Context: \n```\n" + context + "```\n",
 		})
-
 		break
 	}
 
@@ -189,6 +199,20 @@ func (s *Service) generateCompletion(ctx context.Context, integrationID, apiToke
 	}
 
 	return nil
+}
+
+func GetAllFilesInDir(root string) ([]string, error) {
+	var result []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			result = append(result, path)
+		}
+		return nil
+	})
+	return result, err
 }
 
 // asn1Signature is a struct for ASN.1 serializing/parsing signatures.
