@@ -14,6 +14,7 @@ const (
 	apiKey                  = "DEFINE YOUR API KEY HERE"
 	storageConnectionString = "DEFINE YOUR CONNECTION STRING HERE"
 	blobContainer           = "doc"
+	index                   = "typespec-doc-v1"
 )
 
 func QueryIndex(ctx context.Context, req *QueryIndexRequest) (*QueryIndexResponse, error) {
@@ -22,7 +23,7 @@ func QueryIndex(ctx context.Context, req *QueryIndexRequest) (*QueryIndexRespons
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/%s", baseUrl, "indexes/vector-1741167123942/docs/search?api-version=2024-11-01-preview"), bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/indexes/%s/%s", baseUrl, index, "docs/search?api-version=2024-11-01-preview"), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

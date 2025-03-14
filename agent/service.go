@@ -20,6 +20,7 @@ import (
 
 	"github.com/copilot-extensions/rag-extension/copilot"
 	"github.com/copilot-extensions/rag-extension/embedding"
+	"github.com/copilot-extensions/rag-extension/prompt"
 	"github.com/copilot-extensions/rag-extension/search"
 )
 
@@ -78,27 +79,6 @@ func (s *Service) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) generateCompletion(ctx context.Context, integrationID, apiToken string, req *copilot.ChatRequest, w io.Writer) error {
-	// // Initialize the datasets.  In a real application, these would be generated
-	// // ahead of time and stored in a database
-	// var err error
-	// s.datasetsInit.Do(func() {
-	// 	var filenames []string
-	// 	filenames, err = GetAllFilesInDir("data")
-	// 	if err != nil {
-	// 		err = fmt.Errorf("error reading files from \"data\" directory: %w", err)
-	// 		return
-	// 	}
-
-	// 	s.datasets, err = embedding.GenerateDatasets(integrationID, apiToken, filenames)
-	// 	if err != nil {
-	// 		err = fmt.Errorf("error generating datasets: %w", err)
-	// 		return
-	// 	}
-	// })
-	// if err != nil {
-	// 	return err
-	// }
-
 	var messages []copilot.ChatMessage
 
 	// Create embeddings from user messages
@@ -108,57 +88,53 @@ func (s *Service) generateCompletion(ctx context.Context, integrationID, apiToke
 			continue
 		}
 
+		// replace the tsp with typespec
+		msg.Content = strings.ReplaceAll(msg.Content, " tsp", " typespec")
+
 		// Filter empty messages
 		if msg.Content == "" {
 			continue
 		}
-
-		// emb, err := embedding.Create(ctx, integrationID, apiToken, msg.Content)
-		// if err != nil {
-		// 	return fmt.Errorf("error creating embedding for user message: %w", err)
-		// }
-
-		// // Load most appropriate dataset
-		// dataset, err := embedding.FindBestDataset(s.datasets, emb)
-		// if err != nil {
-		// 	return fmt.Errorf("error computing best dataset")
-		// }
-
-		// if dataset == nil {
-		// 	break
-		// }
-
-		// fmt.Printf("loading dataset: %s\n", dataset.Filename)
-
-		// file, err := os.Open(dataset.Filename)
-		// if err != nil {
-		// 	return fmt.Errorf("failed to open documents: %w", err)
-		// }
-
-		// fileContents, err := io.ReadAll(file)
-		// if err != nil {
-		// 	return fmt.Errorf("failed to read documents: %w", err)
-		// }
-
-		results, err := search.SearchTopKRelatedDocuments(msg.Content, 5)
+		println("msg:", msg.Content)
+		results, err := search.SearchTopKRelatedDocuments(msg.Content, 10)
 		if err != nil {
 			return fmt.Errorf("failed to search for related documents: %w", err)
 		}
-		chunks := make([]string, 0)
+		files := make(map[string]bool)
+		mergedChunks := make([]search.Index, 0)
 		for _, result := range results {
-			chunk := fmt.Sprintf("title: %s\n", result.Title)
-			chunk += fmt.Sprintf("header_1: %s\n", result.Header1)
-			chunk += fmt.Sprintf("header_2: %s\n", result.Header2)
-			chunk += fmt.Sprintf("header_3: %s\n", result.Header3)
-			chunk += fmt.Sprintf("chunk: %s\n", result.Chunk)
+			if files[result.Title] {
+				continue
+			}
+			files[result.Title] = true
+			mergedChunks = append(mergedChunks, search.Index{
+				Title: result.Title,
+			})
+			if len(files) == 5 {
+				break
+			}
+		}
+		for i, _ := range mergedChunks {
+			mergedChunks[i] = completeChunk(mergedChunks[i])
+		}
+		chunks := make([]string, 0)
+		chunkLength := 0
+		for _, result := range mergedChunks {
+			chunk := fmt.Sprintf("- chunk_title: %s\n", result.Title)
+			chunk += fmt.Sprintf("- chunk_link: %s\n", search.GetIndexLink(result))
+			chunk += fmt.Sprintf("- content: %s\n", result.Chunk)
+			chunkLength += len(chunk)
+			if chunkLength > 100000 {
+				break
+			}
 			chunks = append(chunks, chunk)
 		}
-		context := strings.Join(chunks, "-----------------\n")
-		println(context)
+		context := strings.Join(chunks, "-------------------------\n")
+		prompt := prompt.BuildAnswerPrompt(msg.Content, context)
+		println(fmt.Printf("message: %s\ncontext:\n%s", msg.Content, context))
 		messages = append(messages, copilot.ChatMessage{
-			Role: "system",
-			Content: "You are a TypeSpec assistant. You are familiar with TypeSpec syntax. You can easily create an TypeSpec Project by User's requirements. \nNotice: - You need to list the title of reference content at the last\n - The answer should be simple and clear\n" +
-				"Context: \n```\n" + context + "```\n",
+			Role:    "system",
+			Content: prompt,
 		})
 		break
 	}
@@ -166,9 +142,12 @@ func (s *Service) generateCompletion(ctx context.Context, integrationID, apiToke
 	messages = append(messages, req.Messages...)
 
 	chatReq := &copilot.ChatCompletionsRequest{
-		Model:    copilot.ModelGPT35,
-		Messages: messages,
-		Stream:   true,
+		Model:               copilot.ModelGPT4o,
+		Messages:            messages,
+		Stream:              true,
+		Temperature:         0.1,
+		TopP:                0.1,
+		MaxCompletionTokens: 1024,
 	}
 
 	stream, err := copilot.ChatCompletions(ctx, "copilot-chat", apiToken, chatReq)
@@ -197,8 +176,35 @@ func (s *Service) generateCompletion(ctx context.Context, integrationID, apiToke
 
 		return fmt.Errorf("failed to read from stream: %w", err)
 	}
+	println("done")
 
 	return nil
+}
+
+func completeChunk(chunk search.Index) search.Index {
+	chunks, err := search.GetCompleteContext(chunk)
+	if err != nil {
+		return chunk
+	}
+	if len(chunks) == 0 {
+		return chunk
+	}
+	var contents []string
+	totalLength := 0
+	for _, chunk := range chunks {
+		if totalLength+len(chunk.Chunk) > 10000 {
+			break
+		}
+		totalLength += len(chunk.Chunk)
+		contents = append(contents, chunk.Chunk)
+	}
+	chunk.Chunk = strings.Join(contents, "\n")
+	chunk.Title = chunks[0].Title
+	chunk.Header1 = chunks[0].Header1
+	chunk.Header2 = ""
+	chunk.Header3 = ""
+	chunk.OrdinalPosition = 0
+	return chunk
 }
 
 func GetAllFilesInDir(root string) ([]string, error) {
@@ -235,4 +241,12 @@ func validPayload(data []byte, sig string, publicKey *ecdsa.PublicKey) (bool, er
 	// Verify the SHA256 encoded payload against the signature with GitHub's Key
 	digest := sha256.Sum256(data)
 	return ecdsa.Verify(publicKey, digest[:], parsedSig.R, parsedSig.S), nil
+}
+
+type AgentResponse struct {
+	FindAnswer         bool     `json:"find_answer"`
+	Answer             string   `json:"answer"`
+	NeedFullContext    bool     `json:"need_full_context"`
+	NeedFullContextIDs []string `json:"need_full_context_chunk_ids"`
+	ReferenceChunkIDs  []string `json:"reference_chunk_ids"`
 }
