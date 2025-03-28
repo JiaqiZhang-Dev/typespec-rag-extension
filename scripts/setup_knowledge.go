@@ -10,43 +10,49 @@ import (
 )
 
 func main() {
-	// Set source and target directories
-	/**
-		mkdir .github
-		cd .github
-		git clone --filter=blob:none --sparse https://github.com/microsoft/typespec.git
-		cd typespec
-		git config core.sparseCheckout true
-		echo "website/src/content/docs/docs" >> .git/info/sparse-checkout
-		git checkout main
-	**/
-	sourceDir := "../.github/typespec/website/src/content/docs/docs"
-	targetDir := "doc"
-
-	// Create target directory
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		fmt.Printf("Error creating target directory: %v\n", err)
-		return
+	// Process both repositories
+	sources := []struct {
+		path   string
+		folder string
+	}{
+		{
+			path:   "docs/typespec/website/src/content/docs/docs",
+			folder: "typespec_docs",
+		},
+		{
+			path:   "docs/typespec-azure/website/src/content/docs/docs",
+			folder: "typespec_azure_docs",
+		},
 	}
 
-	// Walk through all markdown files in source directory
-	err := filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	for _, source := range sources {
+		sourceDir := source.path
+		targetDir := "temp_docs/" + source.folder
+		// Create target directory
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			fmt.Printf("Error creating target directory: %v\n", err)
+			return
 		}
 
-		// Only process markdown files
-		if !info.IsDir() && (strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".mdx")) {
-			if err := processMarkdownFile(path, sourceDir, targetDir); err != nil {
-				fmt.Printf("Error processing file %s: %v\n", path, err)
+		// Walk through all markdown files in source directory
+		err := filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
 			}
-		}
-		return nil
-	})
 
-	if err != nil {
-		fmt.Printf("Error walking through directory: %v\n", err)
-		return
+			// Only process markdown files
+			if !info.IsDir() && (strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".mdx")) {
+				if err := processMarkdownFile(path, sourceDir, targetDir); err != nil {
+					fmt.Printf("Error processing file %s: %v\n", path, err)
+				}
+			}
+			return nil
+		})
+
+		if err != nil {
+			fmt.Printf("Error walking through directory: %v\n", err)
+			return
+		}
 	}
 }
 
@@ -107,7 +113,7 @@ func convertMarkdown(r io.Reader, w io.Writer) error {
 			if strings.HasPrefix(line, "title:") {
 				title = strings.TrimSpace(strings.TrimPrefix(line, "title:"))
 				// Remove possible quotes
-				title = strings.trim(title, "\"'")
+				title = strings.Trim(title, "\"'")
 				foundTitle = true
 			}
 			continue

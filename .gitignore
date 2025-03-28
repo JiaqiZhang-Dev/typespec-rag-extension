@@ -1,0 +1,5 @@
+.vscode/
+docs
+*.log
+*.txt
+scripts/temp_docs
